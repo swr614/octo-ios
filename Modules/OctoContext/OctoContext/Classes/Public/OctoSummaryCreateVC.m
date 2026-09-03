@@ -7,6 +7,7 @@
 #import "OctoSummaryAPI.h"
 #import "OctoSelectedSourcesView.h"
 #import "OctoSummaryDetailVC.h"
+#import "OctoSummaryGroupNotifyHelper.h"
 #import <WuKongBase/WuKongBase.h>
 #import <WuKongBase/WKThreadService.h>
 #import <WuKongBase/WKThreadModel.h>
@@ -580,6 +581,10 @@ static const CGFloat kSourceCardMinH   = 78;    // "选择聊天" 卡最小高�
         if ([result isKindOfClass:NSDictionary.class]) {
             taskId = [((NSDictionary *)result)[@"task_id"] longLongValue];
         }
+        // 本机发起标记 (eligible, 10 分钟 TTL, 一次性消费): 只有打过这个标记的 task,
+        // 在详情页首屏就已经是完成态、拿不到状态跃变时, 才允许发那条群提示。
+        // 点开一条历史已完成的总结没有标记, 因此不会追溯广播。
+        [OctoSummaryGroupNotifyHelper markEligibleTaskId:taskId];
 
         // 对齐 web SummaryCreatePage.handleSubmit: 创建成功后自动替换到详情页, 保证详情页
         // 的完成轮询一定会跑起来 —— 群提示 (OctoSummaryGroupNotifyHelper, WK_TIP 2000) 挂在

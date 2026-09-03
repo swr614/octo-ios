@@ -582,9 +582,6 @@
             [strongSelf.previewInFlight removeObject:@(tid)];
             if (error || ![result isKindOfClass:OctoSummaryDetail.class]) return;
             OctoSummaryDetail *d = result;
-            // 列表预览拉到 detail 时也走一次群提示检查——详情页未挂载/已被 pop
-            // 时,列表轮询是唯一在跑的检测链路,漏掉会导致群提示永远发不出去。
-            [OctoSummaryGroupNotifyHelper notifyIfNeeded:d];
             NSString *content = d.result.content ?: @"";
             // 去掉 markdown 头标记 / 多余空白, 截 120 字。Cell 自身按 boundingRect
             // 测高再截 2 行, 这里给得宽点防止短行。
@@ -774,6 +771,9 @@
             int64_t newId = [((NSDictionary *)result)[@"task_id"] longLongValue];
             if (newId > 0 && newId != origTaskId) {
                 item.taskId = newId;
+                // 列表里发起的"重新生成"同样算本机发起: 打上 eligible 标记, 让用户随后
+                // 点进详情页 (哪怕首屏就已经是完成态) 还能发出那条群提示。列表自身不发。
+                [OctoSummaryGroupNotifyHelper markEligibleTaskId:newId];
                 [ws refreshPoller];
             }
         }

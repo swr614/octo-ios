@@ -44,6 +44,12 @@
 @property(nonatomic, strong) NSTimer *pollTimer;
 @property(nonatomic, assign) BOOL pollErrorToastShown;
 
+/// 上一次 loadDetail 观测到的任务状态。nil = 本页还没观测过 (首屏)。
+/// 群提示只在观测到 非完成 → 完成 的状态跃变时发; 首屏就是完成态的情况靠
+/// "本机发起标记" 单独开闸 (见 notifyGroupsIfCompleted:)。
+/// 与安卓 SmartSummaryDetailViewModel.lastKnownStatus 一一对应。
+@property(nonatomic, copy, nullable) NSNumber *lastKnownStatus;
+
 /// YES 表示 VC 进入"消失中"状态 (viewWillDisappear → viewDidDisappear 之间, 或者
 /// 用户在做交互式右滑 pop)。期间所有"会改变 layout 的异步回调"都必须 no-op,
 /// 否则会和 UIKit 的 transition driver 抢 layout 触发死循环。viewWillAppear 重置
@@ -514,12 +520,39 @@ static const void * const kOctoWebviewDisarmedKey = &kOctoWebviewDisarmedKey;
         weakSelf.pollErrorToastShown = NO;
         weakSelf.detail = result;
         [weakSelf renderDetail];
-        [OctoSummaryGroupNotifyHelper notifyIfNeeded:weakSelf.detail];
+        // 群提示的两个触发点之一: 详情页自身轮询观测到状态跃变 (另一个是通知助手
+        // 卡片/链接点击, 见 OctoSummaryGroupNotifyHelper.handleSummaryDeepLink:)。
+        [weakSelf notifyGroupsIfCompleted:weakSelf.detail];
         if (weakSelf.detail.status == OctoTaskStatusProcessing
             || weakSelf.detail.status == OctoTaskStatusPending) {
             [weakSelf scheduleNextPoll];
         }
     }];
+}
+
+/// 状态跃变判定。两条开闸路径:
+///   1) prev 非空且非完成、本次完成 —— 亲眼看到了跃变, 这是主路径 (聊天页发起 →
+///      自动进详情页 → 轮询到完成)。
+///   2) prev 为空 (首屏) 且本次就是完成态 —— 没有跃变可观测, 只有"本机刚发起过这条
+///      总结"(eligible 标记, 10 分钟 TTL, 一次性) 才开闸。用来覆盖创建后极快完成的
+///      边界; 也正因为有这道闸, 点开一条历史已完成的总结不会追溯广播。
+/// 两条路径都会消费掉 eligible 标记, 避免同一条总结之后又被深链路径判定一次。
+- (void)notifyGroupsIfCompleted:(OctoSummaryDetail *)detail {
+    if (!detail || detail.taskId <= 0) return;
+    NSNumber *prev = self.lastKnownStatus;
+    self.lastKnownStatus = @(detail.status);
+    if (detail.status != OctoTaskStatusCompleted) return;
+
+    BOOL transitioned = (prev != nil && prev.integerValue != OctoTaskStatusCompleted);
+    if (transitioned) {
+        [OctoSummaryGroupNotifyHelper consumeEligibleTaskId:detail.taskId];
+    } else if (prev == nil) {
+        if (![OctoSummaryGroupNotifyHelper consumeEligibleTaskId:detail.taskId]) return;
+    } else {
+        // prev 已经是完成态 —— 同一个终态被轮询/重入看到第二次, 不是新的完成。
+        return;
+    }
+    [OctoSummaryGroupNotifyHelper notifyIfNeededWithDetail:detail];
 }
 
 - (void)scheduleNextPoll {
@@ -1096,6 +1129,12 @@ static const void * const kOctoWebviewDisarmedKey = &kOctoWebviewDisarmedKey;
             int64_t newId = [((NSDictionary *)result)[@"task_id"] longLongValue];
             if (newId > 0 && newId != self.detail.taskId) {
                 self.taskId = @(newId);
+                // 换了 task 就得复位状态观测锚, 否则新任务的首屏会被当成"旧任务的
+                // 后续一拍", 拿旧状态去比跃变。
+                self.lastKnownStatus = nil;
+                // 重新生成也是"本机发起", 与创建同口径打上 eligible 标记 —— 新任务
+                // 极快完成、首屏就是终态时才有闸可开。
+                [OctoSummaryGroupNotifyHelper markEligibleTaskId:newId];
             }
         }
         [self loadDetail];
